@@ -1,4 +1,12 @@
+## problems
 
+how to walk dir tree and find changes?
+
+fname, mtime might not be enough. see [git index](https://mirrors.edge.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt)
+
+## ideas
+
+- store "cost" variable per object that records how much effort it is to restore that object (by recursively resolving deltas)
 
 
 ## Why not just use Git
