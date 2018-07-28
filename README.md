@@ -2,12 +2,44 @@
 
 how to walk dir tree and find changes?
 
-fname, mtime might not be enough. see [git index](https://mirrors.edge.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt)
+fname, mtime might not be enough. see [git index](https://mirrors.edge.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt). dont use tv_nsec! or maybe that issue is fixed in linux? [try this reproduction](https://lkml.org/lkml/2015/6/9/714)
 
 ## ideas
 
 - store "cost" variable per object that records how much effort it is to restore that object (by recursively resolving deltas)
 
+## similarity hashing
+
+
+http://manpages.ubuntu.com/manpages/precise/man1/simhash.1.html
+
+minhash
+http://matpalm.com/resemblance/simhash/
+
+http://roussev.net/sdhash/sdhash.html
+
+https://ssdeep-project.github.io/ssdeep/
+
+
+http://neoscientists.org/~tmueller/binsort/
+
+https://www.dasec.h-da.de/wp-content/uploads/2012/06/adfsl-bbhash.pdf
+
+https://en.wikipedia.org/wiki/Nearest_neighbor_search#Methods
+
+https://www.sciencedirect.com/science/article/pii/S1742287614000097
+
+```
+$ time php -r 'ini_set("memory_limit", "-1");xdiff_file_rabdiff("inp", "oup", "xdiff-patch");'
+php -r   31,57s user 3,33s system 63% cpu 55,009 total
+
+$ time rdiff signature inp sig && time rdiff delta sig oup rdiff-patch
+rdiff signature inp sig  2,74s user 0,23s system 99% cpu 2,977 total
+rdiff delta sig oup rdiff-patch  38,25s user 0,78s system 99% cpu 39,134 total
+
+1090069571      xdiff-patch
+1102816581      rdiff-patch
+```
 
 ## Why not just use Git
 
@@ -28,3 +60,7 @@ There are some things that sadly make git itself unsuitable for this task. Inter
     This program allows removing intermediate versions of files, without having to change history. You can have hourly snapshots for a week and then only daily snapshots for older data. Only metadata changes (esp. file names) have to be retained.
 
     The only option for reducing history size in git is a fixed historical cut off (called shallow repository).
+
+4. Empty trees
+
+    Git does not track empty directories. I don't think there's an actual reason for this since the internal format can easily handle an empty tree. In fact, the empty tree object [does exist](https://stackoverflow.com/questions/9765453/is-gits-semi-secret-empty-tree-object-reliable-and-why-is-there-not-a-symbolic) but it's only used in special cases.
