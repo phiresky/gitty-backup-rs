@@ -1,0 +1,18 @@
+[package]
+name = "gitty-backup-rs"
+version = "0.1.0"
+authors = ["phiresky <phireskyde+git@gmail.com>"]
+
+[dependencies]
+bk-tree = "0.3.0"
+walkdir = "2.1.4"
+chrono = { version = "0.4", features = ["serde"] }
+pretty_env_logger = "0.2.4"
+log = "0.4.3"
+serde = "1.0.70"
+serde_derive = "1.0.70"
+serde_json = "1.0.24"
+hex = "0.3.2"
+sha2 = "0.7.1"
+digest = "0.7.5"
+ignore = "0.4.3"
