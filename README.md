@@ -48,10 +48,10 @@ There are some things that sadly make git itself unsuitable for this task. Inter
 1. Hardcoded zlib compression
 
     Every object (esp. file) in git is immediately compressed with zlib. This can not be turned off. The package format etc. would need some changes to be able to use other or no compression.
+
 2. Inflexible delta compression
 
     Delta compression can be turned off per file using gitattributes. But the way delta compression works is not flexible: For every pack file, the objects are ordered heuristically (using time, basename, etc) and then each object is delta compressed using a fixed number of surrounding objects.
-
 
 3. Removing / reducing historical data is not possible
 
@@ -64,3 +64,6 @@ There are some things that sadly make git itself unsuitable for this task. Inter
 4. Empty trees
 
     Git does not track empty directories. I don't think there's an actual reason for this since the internal format can easily handle an empty tree. In fact, the empty tree object [does exist](https://stackoverflow.com/questions/9765453/is-gits-semi-secret-empty-tree-object-reliable-and-why-is-there-not-a-symbolic) but it's only used in special cases.
+
+5. Missing metadata
+    Git does not store any file permissions, ownership, modified time, etc.
