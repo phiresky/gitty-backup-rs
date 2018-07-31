@@ -1,6 +1,5 @@
 use model::*;
 use std;
-use std::fmt::Debug;
 use std::fmt::Display;
 use std::path::Path;
 
@@ -22,4 +21,4 @@ impl std::convert::From<Box<DBError>> for GittyError {
 }
 //impl<T: DBError> std::fmt::Debug for T {}
 
-pub mod FSDatabase;
+pub mod fs_database;

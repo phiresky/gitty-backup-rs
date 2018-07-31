@@ -20,6 +20,5 @@ pub fn deser_compact_os_str<'de, D>(deserializer: D) -> Result<OsString, D::Erro
 where
     D: Deserializer<'de>,
 {
-    use serde::de::Error;
     String::deserialize(deserializer).and_then(|string| Ok(OsString::from(string)))
 }

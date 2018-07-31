@@ -1,5 +1,5 @@
-use std::any::Any;
 use chrono::prelude::*;
+use digest::Digest;
 use hex;
 use hex::FromHex;
 use serde::Deserialize;
@@ -10,11 +10,9 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::fs::MetadataExt; 
-use util::ser_compact_os_str;
+use std::os::unix::fs::MetadataExt;
 use util::deser_compact_os_str;
-use digest::Digest;
+use util::ser_compact_os_str;
 // TODO: generic hash fn
 pub struct GittyHash {
     // #[serde(serialize_with = "buffer_to_hex")]
@@ -26,7 +24,7 @@ pub struct GittyHash {
     fn convert_output(dig: impl Digest) -> GittyHash;
 }*/
 pub fn get_hasher() -> impl Digest {
-    use sha2::{Sha256, Digest};
+    use sha2::Sha256;
     return Sha256::default();
 }
 pub fn hasher_output(dig: impl Digest) -> GittyHash {
@@ -49,21 +47,20 @@ impl<'de> Deserialize<'de> for GittyHash {
         D: Deserializer<'de>,
     {
         use serde::de::Error;
-        String::deserialize(deserializer)
-            .and_then(|string| {
-                let mut string = string.clone();
-                let hash = string.split_off(5);
-                if string != "sha256:" {
-                    return Err(Error::custom("not a sha256 hash"));
-                }
-                let v = Vec::from_hex(&hash).map_err(|err| Error::custom(err.to_string()))?;
-                if v.len() != 32 {
-                    return Err(Error::custom("invalid sha256 hash"));
-                }
-                let mut sha256 = [0; 32];
-                sha256.copy_from_slice(&v[0..32]);
-                Ok(GittyHash { sha256 })
-            })
+        String::deserialize(deserializer).and_then(|string| {
+            let mut string = string.clone();
+            let hash = string.split_off(5);
+            if string != "sha256:" {
+                return Err(Error::custom("not a sha256 hash"));
+            }
+            let v = Vec::from_hex(&hash).map_err(|err| Error::custom(err.to_string()))?;
+            if v.len() != 32 {
+                return Err(Error::custom("invalid sha256 hash"));
+            }
+            let mut sha256 = [0; 32];
+            sha256.copy_from_slice(&v[0..32]);
+            Ok(GittyHash { sha256 })
+        })
     }
 }
 
@@ -97,15 +94,15 @@ pub struct GittyBlobRef {
 
 pub enum GittyObjectRef {
     Tree(GittyTreeRef),
-    Blob(GittyBlobRef)
+    Blob(GittyBlobRef),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum GittyTreeEntry {
-    #[serde(rename="tree")]
+    #[serde(rename = "tree")]
     Tree(GittyTreeMetadata),
-    #[serde(rename="blob")]
+    #[serde(rename = "blob")]
     Blob(GittyBlobMetadata),
 }
 
@@ -116,7 +113,10 @@ pub struct GittyTree {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GittyTreeMetadata {
-    #[serde(serialize_with = "ser_compact_os_str", deserialize_with = "deser_compact_os_str")]
+    #[serde(
+        serialize_with = "ser_compact_os_str",
+        deserialize_with = "deser_compact_os_str"
+    )]
     pub name: OsString,
     pub modified: DateTime<Utc>,
     pub permissions: Permissions,
@@ -125,7 +125,10 @@ pub struct GittyTreeMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GittyBlobMetadata {
-    #[serde(serialize_with = "ser_compact_os_str", deserialize_with = "deser_compact_os_str")]
+    #[serde(
+        serialize_with = "ser_compact_os_str",
+        deserialize_with = "deser_compact_os_str"
+    )]
     pub name: OsString,
     pub modified: DateTime<Utc>,
     pub permissions: Permissions,
@@ -140,7 +143,7 @@ pub struct Permissions {
     kind: String,
     mode: u32,
     uid: u32,
-    gid: u32
+    gid: u32,
 }
 
 impl Permissions {
@@ -149,7 +152,7 @@ impl Permissions {
             kind: "unix".to_owned(),
             mode: m.mode(),
             uid: m.uid(),
-            gid: m.gid()
+            gid: m.gid(),
         }
     }
 }

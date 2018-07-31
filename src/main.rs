@@ -1,9 +1,3 @@
-use std::ffi::OsString;
-use std::fmt::Display;
-use std::path::Component as PathComponent;
-use std::path::Path;
-use std::path::PathBuf;
-
 extern crate bk_tree;
 extern crate chrono;
 extern crate ignore;
@@ -22,6 +16,9 @@ extern crate sha2;
 use chrono::prelude::*;
 use std::cmp::Ordering;
 
+use std::ffi::OsString;
+use std::path::Component as PathComponent;
+use std::path::Path;
 use walkdir::DirEntry;
 
 mod database;
@@ -87,8 +84,7 @@ fn ascend_path_stack(
             path_stack.last().unwrap().name.to_string_lossy()
         );
         let new_entry = create_tree_entry(database, path_stack.pop().unwrap())?;
-        let mut last = path_stack.last_mut().unwrap();
-        last.entries.push(new_entry);
+        path_stack.last_mut().unwrap().entries.push(new_entry);
     }
     Ok(())
 }
@@ -164,7 +160,7 @@ fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) -> Result<(), Gitty
             }
             ord.then_with(|| a.file_name().cmp(b.file_name()))
         });
-    let mut db = db::FSDatabase::FSDatabase::new(db::FSDatabase::FSDatabaseConfig {
+    let mut db = db::fs_database::FSDatabase::new(db::fs_database::FSDatabaseConfig {
         root: dbdir.to_path_buf(),
         object_prefix_length: 3,
     });

@@ -3,7 +3,6 @@ use digest::Digest;
 use hex;
 use model::GittyObjectRef::Blob;
 use model::GittyObjectRef::Tree;
-use model::*;
 use rand::OsRng;
 use rand::Rng;
 use serde_json;
@@ -88,7 +87,6 @@ pub fn hashing_copy(
     writer: &mut impl Write,
     hasher: &mut impl Digest,
 ) -> std::io::Result<u64> {
-    let mut hasher = get_hasher();
     let mut buf = Box::new([0u8; COPY_BUF_SIZE]);
 
     let mut written = 0;
@@ -100,6 +98,7 @@ pub fn hashing_copy(
             Err(e) => return Err(e),
         };
         let buf_part = &buf[..len];
+        hasher.input(buf_part);
         writer.write_all(buf_part)?;
         written += len as u64;
     }
@@ -111,7 +110,7 @@ impl GittyDatabase for FSDatabase {
         in_path: &Path,
         is_symlink: bool,
     ) -> Result<GittyBlobRef, Box<DBError>> {
-        if (is_symlink) {
+        if is_symlink {
             return self.store_symlink(in_path);
         }
         debug!("DB: store blob {} NOOP", in_path.to_string_lossy());
