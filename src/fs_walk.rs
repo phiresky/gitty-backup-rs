@@ -1,45 +1,14 @@
-extern crate bk_tree;
-extern crate chrono;
-extern crate ignore;
-extern crate pretty_env_logger;
-extern crate serde;
-extern crate serde_json;
-#[macro_use]
-extern crate serde_derive;
-extern crate walkdir;
-#[macro_use]
-extern crate log;
-extern crate digest;
-extern crate hex;
-extern crate rand;
-extern crate sha2;
 use chrono::prelude::*;
+use database as db;
+use ignore;
+use model::*;
+use std;
 use std::cmp::Ordering;
-
 use std::ffi::OsString;
 use std::path::Component as PathComponent;
 use std::path::Path;
+use walkdir;
 use walkdir::DirEntry;
-
-mod database;
-mod model;
-mod util;
-use model::*;
-
-use database as db;
-
-// use bk_tree::{BKTree, metrics};
-
-fn main() {
-    pretty_env_logger::init();
-    let args: Vec<_> = std::env::args().collect();
-    let path = Path::new(&args[1]);
-    let dbpath = Path::new(&args[2]);
-    let ignorepath = path.join(".gittyignore");
-    find_changes(path, dbpath, &ignorepath)
-        .map_err(|p| format!("{}", p))
-        .unwrap();
-}
 
 impl std::convert::From<walkdir::Error> for GittyError {
     fn from(i: walkdir::Error) -> GittyError {
@@ -142,7 +111,11 @@ fn dirent_to_gitty_tree_entry(
     Ok(())
 }
 
-fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) -> Result<(), GittyError> {
+pub fn recursive_write_tree_to_db(
+    dir: &Path,
+    db: &mut impl db::GittyDatabase,
+    ignorefile: &Path,
+) -> Result<GittyTreeRef, GittyError> {
     let mut ignore = ignore::gitignore::GitignoreBuilder::new(dir);
     ignore.add(ignorefile);
     let ignorer = ignore.build().unwrap();
@@ -160,10 +133,6 @@ fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) -> Result<(), Gitty
             }
             ord.then_with(|| a.file_name().cmp(b.file_name()))
         });
-    let mut db = db::fs_database::FSDatabase::new(db::fs_database::FSDatabaseConfig {
-        root: dbdir.to_path_buf(),
-        object_prefix_length: 3,
-    });
     let mut path_stack: Vec<StackPart> = Vec::new();
     for (entry, metadata) in walker
         .into_iter()
@@ -191,18 +160,17 @@ fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) -> Result<(), Gitty
                 }
             }
         }) {
-        dirent_to_gitty_tree_entry(&mut db, &mut path_stack, entry, metadata)?;
+        dirent_to_gitty_tree_entry(db, &mut path_stack, entry, metadata)?;
     }
-    ascend_path_stack(&mut db, &mut path_stack, 1)?;
+    ascend_path_stack(db, &mut path_stack, 1)?;
     let root_entry = path_stack.pop().unwrap();
     if path_stack.len() != 0 {
         panic!("root invalid");
     }
-    let root = create_tree_entry(&mut db, root_entry)?;
+    let root = create_tree_entry(db, root_entry)?;
     if let GittyTreeEntry::Tree(t) = root {
-        println!("root: {:?}", t.hash);
+        return Ok(GittyTreeRef { hash: t.hash });
     } else {
         panic!("root is blob?");
     }
-    Ok(())
 }

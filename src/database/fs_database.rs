@@ -1,8 +1,8 @@
+use commits::create_commit;
 use database::*;
 use digest::Digest;
 use hex;
-use model::GittyObjectRef::Blob;
-use model::GittyObjectRef::Tree;
+use model::GittyObjectRef::*;
 use rand::OsRng;
 use rand::Rng;
 use serde_json;
@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct FSDatabaseConfig {
     pub root: PathBuf,
     pub object_prefix_length: usize,
@@ -23,44 +24,80 @@ pub struct FSDatabase {
 }
 
 impl FSDatabase {
-    pub fn new(config: FSDatabaseConfig) -> FSDatabase {
-        FSDatabase { config }
+    pub fn open(config: FSDatabaseConfig) -> Option<FSDatabase> {
+        let db = FSDatabase { config };
+        if db.head_path().exists() {
+            Some(db)
+        } else {
+            None
+        }
+    }
+    pub fn create(config: FSDatabaseConfig) -> Result<FSDatabase, GittyError> {
+        if config.root.exists() {
+            Err(GittyError::new(
+                String::from("Creation"),
+                Box::new(format!("{} already exists", config.root.display())),
+            ))
+        } else {
+            let mut db = FSDatabase { config };
+            let empty_tree = db.store_tree(GittyTree { entries: vec![] })?;
+            let first_commit = create_commit(empty_tree, vec![], 0);
+            let commit_ref = db.store_commit(first_commit)?;
+            db.update_head_commit(&commit_ref)?;
+            Ok(db)
+        }
     }
 
-    fn store_symlink(&mut self, in_path: &Path) -> Result<GittyBlobRef, Box<DBError>> {
+    pub fn create_or_open(dbdir: &Path) -> Result<impl GittyDatabase, impl Display> {
+        let config = FSDatabaseConfig {
+            root: dbdir.to_path_buf(),
+            object_prefix_length: 3,
+        };
+        FSDatabase::open(config.clone()).ok_or("no").or_else(|_| {
+            info!("Creating new database in {}", dbdir.to_path_buf().display());
+            FSDatabase::create(config)
+        })
+    }
+
+    fn store_symlink(&mut self, in_path: &Path) -> Result<GittyBlobRef, DBError> {
         debug!("DB: store blob {} NOOP", in_path.to_string_lossy());
         Ok(GittyBlobRef {
             hash: PLACEHOLDER_HASH,
         })
+    }
+
+    fn head_path(&self) -> PathBuf {
+        self.config.root.join("HEAD")
     }
 }
 
 struct SerializeError {
     serde_error: serde_json::Error,
 }
-impl DBError for SerializeError {
+impl _DBError for SerializeError {
     fn as_up(&self) -> Box<Display> {
         return Box::new(format!("Serde error: {:?}", self.serde_error));
     }
 }
-impl DBError for std::io::Error {
+impl _DBError for std::io::Error {
     fn as_up(&self) -> Box<Display> {
         return Box::new(format!("IO error: {:?}", self));
     }
 }
 
-impl std::convert::From<std::io::Error> for Box<dyn DBError> {
-    fn from(c: std::io::Error) -> Box<DBError> {
-        let b: Box<DBError> = Box::new(c);
+impl std::convert::From<std::io::Error> for DBError {
+    fn from(c: std::io::Error) -> DBError {
+        let b: DBError = Box::new(c);
         b
     }
 }
 
-fn get_output_path(config: &FSDatabaseConfig, object_ref: &GittyObjectRef) -> PathBuf {
+fn get_object_path(config: &FSDatabaseConfig, object_ref: &GittyObjectRef) -> PathBuf {
     let mut p = config.root.clone();
     let (hash, parent) = match object_ref {
         Blob(b) => (&b.hash, "file"),
         Tree(t) => (&t.hash, "tree"),
+        Commit(c) => (&c.hash, "commit"),
     };
     p.push(parent);
     let mut hash_str = hex::encode(hash.sha256);
@@ -79,8 +116,8 @@ fn get_temp_path(config: &FSDatabaseConfig) -> PathBuf {
     p.push(format!("temp-{}", hex::encode(arr)));
     p
 }
-const COPY_BUF_SIZE: usize = 1024 * 1024;
 
+const COPY_BUF_SIZE: usize = 1024 * 1024;
 // https://doc.rust-lang.org/src/std/io/util.rs.html#48-68
 pub fn hashing_copy(
     reader: &mut impl Read,
@@ -104,12 +141,13 @@ pub fn hashing_copy(
     }
 }
 
+fn wrap_serde_err(e: serde_json::Error) -> DBError {
+    // TODO: why is this extra step necessary
+    let b: DBError = Box::new(SerializeError { serde_error: e });
+    return b;
+}
 impl GittyDatabase for FSDatabase {
-    fn store_blob(
-        &mut self,
-        in_path: &Path,
-        is_symlink: bool,
-    ) -> Result<GittyBlobRef, Box<DBError>> {
+    fn store_blob(&mut self, in_path: &Path, is_symlink: bool) -> Result<GittyBlobRef, DBError> {
         if is_symlink {
             return self.store_symlink(in_path);
         }
@@ -125,32 +163,23 @@ impl GittyDatabase for FSDatabase {
         hashing_copy(&mut reader, &mut writer, &mut hasher)?;
 
         let hash = hasher_output(hasher);
-        let blob_ref = GittyObjectRef::Blob(GittyBlobRef { hash });
+        let blob_ref = GittyBlobRef { hash };
 
-        let out_path = get_output_path(&self.config, &blob_ref);
+        let out_path = get_object_path(&self.config, &GittyObjectRef::Blob(&blob_ref));
         debug!("moving {:?} to {:?}", tmp_out_path, out_path);
         fs::create_dir_all(out_path.parent().unwrap())?;
 
         fs::rename(tmp_out_path, out_path)?;
-        if let GittyObjectRef::Blob(p) = blob_ref {
-            Ok(p)
-        } else {
-            // TODO: ugly
-            panic!()
-        }
+        Ok(blob_ref)
     }
 
-    fn store_tree(&mut self, tree: GittyTree) -> Result<GittyTreeRef, Box<DBError>> {
-        let serialized = serde_json::to_string(&tree).map_err(|e| {
-            // TODO: why is the extra step necessary
-            let b: Box<DBError> = Box::new(SerializeError { serde_error: e });
-            return b;
-        })?;
+    fn store_tree(&mut self, tree: GittyTree) -> Result<GittyTreeRef, DBError> {
+        let serialized = serde_json::to_string(&tree).map_err(wrap_serde_err)?;
         let mut hasher = get_hasher();
         hasher.input(serialized.as_bytes());
         let hash = hasher_output(hasher);
-        let tree_ref = GittyObjectRef::Tree(GittyTreeRef { hash });
-        let out_path = get_output_path(&self.config, &tree_ref);
+        let tree_ref = GittyTreeRef { hash };
+        let out_path = get_object_path(&self.config, &GittyObjectRef::Tree(&tree_ref));
         debug!(
             "DB: stored tree {} as {}",
             out_path.to_string_lossy(),
@@ -158,11 +187,51 @@ impl GittyDatabase for FSDatabase {
         );
         fs::create_dir_all(out_path.parent().unwrap())?;
         fs::write(out_path, serialized)?;
-        if let GittyObjectRef::Tree(p) = tree_ref {
-            Ok(p)
-        } else {
-            // TODO: ugly
-            panic!()
-        }
+        Ok(tree_ref)
+    }
+
+    // TODO: code duplication with store_tree
+    fn store_commit(&mut self, commit: GittyCommit) -> Result<GittyCommitRef, DBError> {
+        let serialized = serde_json::to_string(&commit).map_err(wrap_serde_err)?;
+        let mut hasher = get_hasher();
+        hasher.input(serialized.as_bytes());
+        let hash = hasher_output(hasher);
+        let commit_ref = GittyCommitRef { hash };
+        let out_path = get_object_path(&self.config, &GittyObjectRef::Commit(&commit_ref));
+        debug!(
+            "DB: stored commit {} as {}",
+            out_path.to_string_lossy(),
+            serde_json::to_string_pretty(&commit).unwrap(),
+        );
+        fs::create_dir_all(out_path.parent().unwrap())?;
+        fs::write(out_path, serialized)?;
+        Ok(commit_ref)
+    }
+
+    fn load_blob(&self, blob_ref: &GittyBlobRef) -> Result<PathBuf, DBError> {
+        let path = get_object_path(&self.config, &GittyObjectRef::Blob(blob_ref));
+        Ok(path)
+    }
+    fn load_tree(&self, tree_ref: &GittyTreeRef) -> Result<GittyTree, DBError> {
+        let path = get_object_path(&self.config, &GittyObjectRef::Tree(tree_ref));
+        let reader = File::open(path)?;
+        let res = serde_json::from_reader(reader).map_err(wrap_serde_err)?;
+        Ok(res)
+    }
+    fn load_commit(&self, commit_ref: &GittyCommitRef) -> Result<GittyCommit, DBError> {
+        let path = get_object_path(&self.config, &GittyObjectRef::Commit(commit_ref));
+        let reader = File::open(path)?;
+        let res = serde_json::from_reader(reader).map_err(wrap_serde_err)?;
+        Ok(res)
+    }
+
+    fn get_head_commit(&self) -> Result<GittyCommitRef, DBError> {
+        let head_path = self.head_path();
+        Ok(serde_json::from_reader(File::open(head_path)?).map_err(wrap_serde_err)?)
+    }
+    fn update_head_commit(&self, commit_ref: &GittyCommitRef) -> Result<(), DBError> {
+        let head_path = self.head_path();
+        serde_json::to_writer(File::create(head_path)?, commit_ref).map_err(wrap_serde_err)?;
+        Ok(())
     }
 }

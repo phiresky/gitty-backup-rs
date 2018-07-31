@@ -8,12 +8,14 @@ use serde::Serialize;
 use serde::Serializer;
 use std::ffi::OsString;
 use std::fmt;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use util::deser_compact_os_str;
-use util::ser_compact_os_str;
+use util::serde_compact_osstr;
 // TODO: generic hash fn
+#[derive(Clone, PartialEq, Eq, Hash)]
+
 pub struct GittyHash {
     // #[serde(serialize_with = "buffer_to_hex")]
     pub sha256: [u8; 32],
@@ -49,7 +51,7 @@ impl<'de> Deserialize<'de> for GittyHash {
         use serde::de::Error;
         String::deserialize(deserializer).and_then(|string| {
             let mut string = string.clone();
-            let hash = string.split_off(5);
+            let hash = string.split_off(7);
             if string != "sha256:" {
                 return Err(Error::custom("not a sha256 hash"));
             }
@@ -82,22 +84,52 @@ pub const PLACEHOLDER_HASH: GittyHash = GittyHash {
     ],
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct GittyTreeRef {
     pub hash: GittyHash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct GittyBlobRef {
     pub hash: GittyHash,
 }
 
-pub enum GittyObjectRef {
-    Tree(GittyTreeRef),
-    Blob(GittyBlobRef),
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub struct GittyCommitRef {
+    pub hash: GittyHash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash)]
+pub enum GittyObjectRef<'a> {
+    Tree(&'a GittyTreeRef),
+    Blob(&'a GittyBlobRef),
+    Commit(&'a GittyCommitRef),
+}
+
+impl<'a> GittyObjectRef<'a> {
+    pub fn to_owned(&self) -> OwnedGittyObjectRef {
+        OwnedGittyObjectRef::from(self)
+    }
+}
+
+#[derive(PartialEq, Eq, Hash)]
+pub enum OwnedGittyObjectRef {
+    Tree(GittyTreeRef),
+    Blob(GittyBlobRef),
+    Commit(GittyCommitRef),
+}
+impl<'a> From<&'a GittyObjectRef<'a>> for OwnedGittyObjectRef {
+    fn from(a: &GittyObjectRef<'a>) -> OwnedGittyObjectRef {
+        // use GittyObjectRef::*;
+        match a {
+            GittyObjectRef::Tree(t) => OwnedGittyObjectRef::Tree((*t).clone()),
+            GittyObjectRef::Blob(t) => OwnedGittyObjectRef::Blob((*t).clone()),
+            GittyObjectRef::Commit(t) => OwnedGittyObjectRef::Commit((*t).clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum GittyTreeEntry {
     #[serde(rename = "tree")]
@@ -106,29 +138,44 @@ pub enum GittyTreeEntry {
     Blob(GittyBlobMetadata),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GittyTree {
     pub entries: Vec<GittyTreeEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GittyAuthor {
+    pub name: String,
+    pub email: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+
+pub struct GittyCommit {
+    // author / committer are unused, added for
+    pub author: GittyAuthor,
+    pub committer: GittyAuthor,
+    pub author_time: DateTime<FixedOffset>,
+    pub commit_time: DateTime<FixedOffset>,
+    pub message: String,
+    pub depth: u64,
+    // should be Vec<GittyCommitRef> and root: GittyTreeRef but then serialization looks ugly
+    pub parents: Vec<GittyHash>,
+    pub root: GittyHash,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GittyTreeMetadata {
-    #[serde(
-        serialize_with = "ser_compact_os_str",
-        deserialize_with = "deser_compact_os_str"
-    )]
+    #[serde(with = "serde_compact_osstr")]
     pub name: OsString,
     pub modified: DateTime<Utc>,
     pub permissions: Permissions,
     pub hash: GittyHash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GittyBlobMetadata {
-    #[serde(
-        serialize_with = "ser_compact_os_str",
-        deserialize_with = "deser_compact_os_str"
-    )]
+    #[serde(with = "serde_compact_osstr")]
     pub name: OsString,
     pub modified: DateTime<Utc>,
     pub permissions: Permissions,
@@ -138,12 +185,12 @@ pub struct GittyBlobMetadata {
 }
 
 // TODO: windows compat
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Permissions {
-    kind: String,
-    mode: u32,
-    uid: u32,
-    gid: u32,
+    pub kind: String,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 impl Permissions {
@@ -166,6 +213,12 @@ impl GittyError {
     }
 }
 impl Display for GittyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.prefix, self.inner)
+    }
+}
+
+impl Debug for GittyError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}: {}", self.prefix, self.inner)
     }

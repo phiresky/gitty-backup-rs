@@ -1,5 +1,5 @@
 [package]
-name = "gitty-backup-rs"
+name = "gitty_backup_rs"
 version = "0.1.0"
 authors = ["phiresky <phireskyde+git@gmail.com>"]
 
@@ -17,3 +17,10 @@ sha2 = "0.7.1"
 digest = "0.7.5"
 ignore = "0.4.3"
 rand = "0.5.4"
+whoami = "0.2.2"
+env_logger = "0.5.11"
+fuse = "0.3.1"
+bidir-map = "1.0.0"
+libc = "0.2.42"
+time = "0.1.40"
+bimap = "0.1.5"
