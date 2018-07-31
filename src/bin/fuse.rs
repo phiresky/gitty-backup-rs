@@ -5,11 +5,10 @@ extern crate env_logger;
 extern crate fuse;
 extern crate gitty_backup_rs;
 extern crate libc;
+extern crate lru_time_cache;
 extern crate time;
+
 use bimap::BiMap;
-use chrono::DateTime;
-use chrono::FixedOffset;
-use chrono::TimeZone;
 use chrono::Utc;
 use fuse::FileAttr;
 use fuse::FileType;
@@ -26,14 +25,19 @@ use gitty_backup_rs::database::GittyDatabase;
 use gitty_backup_rs::model::*;
 use libc::EINVAL;
 use libc::EIO;
+use libc::EISDIR;
 use libc::ENOENT;
-use std::borrow::Borrow;
+use lru_time_cache::LruCache;
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::fs::File;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -44,7 +48,7 @@ const TTL: Timespec = Timespec {
     nsec: 0,
 }; // immutable, cache forever
 
-const std_attr: FileAttr = FileAttr {
+const STD_ATTR: FileAttr = FileAttr {
     ino: 0,
     atime: Timespec { sec: 0, nsec: 0 },
     mtime: Timespec { sec: 0, nsec: 0 },
@@ -71,6 +75,7 @@ struct GittyViewer<'a> {
     trees: HashMap<GittyTreeRef, GittyTree>,
     inode_max: Inode,
     root_mtime: Duration,
+    blob_read_cache: LruCache<Inode, File>,
 }
 
 fn find_tree_entry<'a>(tree: &'a GittyTree, name: &'a OsStr) -> Option<&'a GittyTreeEntry> {
@@ -100,6 +105,10 @@ impl<'a> GittyViewer<'a> {
             trees: HashMap::new(),
             commits: HashMap::new(),
             root_map: HashMap::new(),
+            blob_read_cache: LruCache::with_expiry_duration_and_capacity(
+                Duration::from_secs(60),
+                500,
+            ),
         }
     }
     fn get_tree(&mut self, r: &GittyTreeRef) -> Option<&GittyTree> {
@@ -107,7 +116,7 @@ impl<'a> GittyViewer<'a> {
             Entry::Occupied(o) => Some(o.into_mut()),
             Entry::Vacant(v) => match self.db.load_tree(r) {
                 Ok(e) => Some(v.insert(e)),
-                Err(p) => None,
+                Err(_) => None,
             },
         }
     }
@@ -118,14 +127,9 @@ impl<'a> GittyViewer<'a> {
         name: &OsStr,
     ) -> Inode {
         let entry = find_tree_entry(tree, name).unwrap();
-        self.tree_entry_to_inode(tree, tree_ref, entry)
+        self.tree_entry_to_inode(tree_ref, entry)
     }
-    fn tree_entry_to_inode(
-        &mut self,
-        tree: &GittyTree,
-        tree_ref: &GittyTreeRef,
-        entry: &GittyTreeEntry,
-    ) -> Inode {
+    fn tree_entry_to_inode(&mut self, tree_ref: &GittyTreeRef, entry: &GittyTreeEntry) -> Inode {
         let (name, entry_wrap) = match entry {
             GittyTreeEntry::Tree(t) => (
                 t.name.clone(),
@@ -139,7 +143,6 @@ impl<'a> GittyViewer<'a> {
                     hash: t.hash.clone(),
                 }),
             ),
-            _ => panic!("tree_to_inode"),
         };
 
         let tp = (tree_ref.clone(), name.to_owned(), entry_wrap);
@@ -172,7 +175,7 @@ impl<'a> GittyViewer<'a> {
     fn inode_to_tree(&self, inode: Inode) -> Option<Cow<GittyTreeEntry>> {
         self.inode_trees_blobs
             .get_by_left(&inode)
-            .and_then(|(r, n, h)| self.trees.get(r).map(|p| (p, n.as_ref())))
+            .and_then(|(r, n, _)| self.trees.get(r).map(|p| (p, n.as_ref())))
             .and_then(|(a, b)| find_tree_entry(a, b))
             .map(|p| Cow::Borrowed(p))
             .or_else(|| {
@@ -194,70 +197,70 @@ impl<'a> GittyViewer<'a> {
                     })
             })
     }
-}
 
-fn entry_to_attr(entry: &GittyTreeEntry, ino: Inode, req: &Request) -> FileAttr {
-    match entry {
-        GittyTreeEntry::Tree(t) => {
-            let time = Timespec {
-                sec: t.modified.timestamp(),
-                nsec: t.modified.timestamp_subsec_nanos() as i32,
-            };
-            FileAttr {
-                ino,
-                atime: time,
-                mtime: time,
-                ctime: time,
-                crtime: time,
-                blocks: 0,
-                size: 0,
-                flags: 0,
-                gid: req.gid(),
-                uid: req.uid(),
-                perm: 0o755,
-                nlink: 1,
-                kind: FileType::Directory,
-                rdev: 0,
+    fn entry_to_attr(entry: &GittyTreeEntry, ino: Inode) -> FileAttr {
+        match entry {
+            GittyTreeEntry::Tree(t) => {
+                let time = Timespec {
+                    sec: t.modified.timestamp(),
+                    nsec: t.modified.timestamp_subsec_nanos() as i32,
+                };
+                FileAttr {
+                    ino,
+                    atime: time,
+                    mtime: time,
+                    ctime: time,
+                    crtime: time,
+                    blocks: 0,
+                    size: 0,
+                    flags: 0,
+                    gid: t.permissions.gid,
+                    uid: t.permissions.uid,
+                    perm: t.permissions.mode as u16,
+                    nlink: 1,
+                    kind: FileType::Directory,
+                    rdev: 0,
+                }
             }
-        }
-        GittyTreeEntry::Blob(t) => {
-            let time = Timespec {
-                sec: t.modified.timestamp(),
-                nsec: t.modified.timestamp_subsec_nanos() as i32,
-            };
-            FileAttr {
-                ino,
-                atime: time,
-                mtime: time,
-                ctime: time,
-                crtime: time,
-                blocks: 0,
-                size: t.size,
-                flags: 0,
-                gid: req.gid(),
-                uid: req.uid(),
-                perm: 0o755,
-                nlink: 1,
-                kind: if t.is_symlink {
-                    FileType::Symlink
-                } else {
-                    FileType::RegularFile
-                },
-                rdev: 0,
+            GittyTreeEntry::Blob(t) => {
+                let time = Timespec {
+                    sec: t.modified.timestamp(),
+                    nsec: t.modified.timestamp_subsec_nanos() as i32,
+                };
+                FileAttr {
+                    ino,
+                    atime: time,
+                    mtime: time,
+                    ctime: time,
+                    crtime: time,
+                    size: t.size,
+                    gid: t.permissions.gid,
+                    uid: t.permissions.uid,
+                    perm: t.permissions.mode as u16,
+                    nlink: 1,
+                    kind: if t.is_symlink {
+                        FileType::Symlink
+                    } else {
+                        FileType::RegularFile
+                    },
+                    rdev: 0,
+                    ..STD_ATTR
+                }
             }
         }
     }
 }
+
 const GENERATION: u64 = 0;
 impl<'a> Filesystem for GittyViewer<'a> {
-    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let tree_ref = {
             if parent == FUSE_ROOT_ID {
                 if let Some(commit_ref) = self.root_map.get(name).map(|p| p.clone()) {
                     let c = self.commits.get(&commit_ref).unwrap().clone();
                     let ino = self.commit_to_inode(Cow::Owned(commit_ref), Cow::Owned(c));
                     if let Some(entry) = self.inode_to_tree(ino) {
-                        let attr = entry_to_attr(&entry, ino, req);
+                        let attr = GittyViewer::entry_to_attr(&entry, ino);
                         reply.entry(&TTL, &attr, GENERATION);
                         return;
                     }
@@ -296,7 +299,7 @@ impl<'a> Filesystem for GittyViewer<'a> {
             }
         };
         let ino = self.tree_ele_to_inode(&tree, &tree_ref, name);
-        let attr = entry_to_attr(&entry, ino, req);
+        let attr = GittyViewer::entry_to_attr(&entry, ino);
         reply.entry(&TTL, &attr, GENERATION);
         return;
     }
@@ -320,34 +323,73 @@ impl<'a> Filesystem for GittyViewer<'a> {
                     uid: req.uid(),
                     perm: 0o755,
                     kind: FileType::Directory,
-                    ..std_attr
+                    ..STD_ATTR
                 },
             );
             return;
         }
         if let Some(entry) = self.inode_to_tree(ino) {
-            let attr = entry_to_attr(&entry, ino, req);
+            let attr = GittyViewer::entry_to_attr(&entry, ino);
             reply.attr(&TTL, &attr);
             return;
         }
         reply.error(ENOENT);
     }
 
-    /*fn read(
+    // TODO: implement proper state based i/o
+    fn read(
         &mut self,
         _req: &Request,
         ino: u64,
         _fh: u64,
         offset: i64,
-        _size: u32,
+        size: u32,
         reply: ReplyData,
     ) {
-        if ino == 2 {
-            reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
-        } else {
-            reply.error(ENOENT);
+        use lru_time_cache::Entry;
+
+        let mut f = match self.blob_read_cache.entry(ino) {
+            Entry::Occupied(o) => o.into_mut(),
+            Entry::Vacant(v) => {
+                if let Some((_, _, hash)) = self.inode_trees_blobs.get_by_left(&ino) {
+                    match hash {
+                        OwnedGittyObjectRef::Tree(t) => {
+                            reply.error(EISDIR);
+                            return;
+                        }
+                        OwnedGittyObjectRef::Commit(t) => {
+                            reply.error(EINVAL);
+                            return;
+                        }
+                        OwnedGittyObjectRef::Blob(blob_ref) => {
+                            if let Ok(path) = self.db.load_blob(blob_ref) {
+                                v.insert(File::open(path).unwrap())
+                            } else {
+                                reply.error(EIO);
+                                return;
+                            }
+                        }
+                    }
+                } else {
+                    reply.error(ENOENT);
+                    return;
+                }
+            }
+        };
+        f.seek(SeekFrom::Start(offset as u64)).unwrap();
+        let mut buf = vec![0; size as usize];
+        match f.read(&mut buf[..]) {
+            Ok(size) => {
+                reply.data(&buf[0..size]);
+                return;
+            }
+            Err(e) => {
+                eprintln!("read: {:?}", e);
+                reply.error(EIO);
+                return;
+            }
         }
-    }*/
+    }
 
     fn readdir(
         &mut self,
@@ -396,7 +438,7 @@ impl<'a> Filesystem for GittyViewer<'a> {
             }
         } else {
             let tree_ref = {
-                if let Some((_, name, tree_hash)) = self.inode_trees_blobs.get_by_left(&ino) {
+                if let Some((_, _, tree_hash)) = self.inode_trees_blobs.get_by_left(&ino) {
                     match tree_hash {
                         OwnedGittyObjectRef::Tree(t) => t.clone(),
                         _ => {
@@ -415,7 +457,7 @@ impl<'a> Filesystem for GittyViewer<'a> {
             };
             let tree = (*self.get_tree(&tree_ref).unwrap()).clone();
             for (i, entry) in tree.entries.iter().enumerate().skip(offset as usize) {
-                let ino = self.tree_entry_to_inode(&tree, &tree_ref, entry);
+                let ino = self.tree_entry_to_inode(&tree_ref, entry);
                 let (name, kind) = match entry {
                     GittyTreeEntry::Tree(t) => (t.name.clone(), FileType::Directory),
                     GittyTreeEntry::Blob(t) => (
@@ -426,7 +468,6 @@ impl<'a> Filesystem for GittyViewer<'a> {
                             FileType::RegularFile
                         },
                     ),
-                    _ => panic!("tree_to_inode"),
                 };
                 let full = reply.add(ino, (i + 1) as i64, kind, name);
                 if full {

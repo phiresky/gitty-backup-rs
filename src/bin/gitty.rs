@@ -33,13 +33,13 @@ fn main() -> Result<(), GittyError> {
     let mut db = database::fs_database::FSDatabase::create_or_open(dbpath).unwrap_or_else(|m| {
         panic!("{}", m);
     });
-    {
+    /*{
         let head = db.get_head_commit()?;
         for commit in commits::walk_commits(&mut db, head) {
             println!("{:?}", commit);
         }
-    }
-    //commits::commit_current_state_to_head(path, &mut db, &ignorepath)
-    //    .unwrap_or_else(|m| panic!("{}", m));
+    }*/
+    commits::commit_current_state_to_head(path, &mut db, &ignorepath)
+        .unwrap_or_else(|m| panic!("{}", m));
     Ok(())
 }
