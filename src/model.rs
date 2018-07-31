@@ -11,6 +11,7 @@ use std::fmt;
 use std::fmt::Display;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::MetadataExt; 
 use util::ser_compact_os_str;
 use util::deser_compact_os_str;
 use digest::Digest;
@@ -138,13 +139,17 @@ pub struct GittyBlobMetadata {
 pub struct Permissions {
     kind: String,
     mode: u32,
+    uid: u32,
+    gid: u32
 }
 
-impl From<fs::Permissions> for Permissions {
-    fn from(p: fs::Permissions) -> Permissions {
+impl Permissions {
+    pub fn new(m: &fs::Metadata) -> Permissions {
         Permissions {
             kind: "unix".to_owned(),
-            mode: p.mode(),
+            mode: m.mode(),
+            uid: m.uid(),
+            gid: m.gid()
         }
     }
 }

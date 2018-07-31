@@ -1,8 +1,12 @@
+## Blocking problems for actual use
+
+1. data loss :)
+
 ## problems
 
 how to walk dir tree and find changes?
 
-fname, mtime might not be enough. see [git index](https://mirrors.edge.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt). dont use tv_nsec! or maybe that issue is fixed in linux? [try this reproduction](https://lkml.org/lkml/2015/6/9/714)
+fname, mtime might not be enough. see [git index](https://mirrors.edge.kernel.org/pub/software/scm/git/docs/technical/racy-git.txt). dont use tv_nsec! or maybe that issue is fixed in linux? [try this reproduction](https://lkml.org/lkml/2015/6/9/714). looks like it's fine for UDF at least
 
 ## ideas
 
@@ -37,8 +41,14 @@ $ time rdiff signature inp sig && time rdiff delta sig oup rdiff-patch
 rdiff signature inp sig  2,74s user 0,23s system 99% cpu 2,977 total
 rdiff delta sig oup rdiff-patch  38,25s user 0,78s system 99% cpu 39,134 total
 
+$ time xdelta3 -e -s inp oup xdelta-patch
+xdelta3 -e -s inp oup xdelta-patch 411,30s user 2,02s system 97% cpu 7:05,27 total
+
+1953349632      inp (ubuntu-18.04.1-desktop-amd64.iso)
+1502576640      oup (ubuntu-17.10.1-desktop-amd64.iso)
 1090069571      xdiff-patch
 1102816581      rdiff-patch
+1414343627      xdelta-patch
 ```
 
 ## Why not just use Git

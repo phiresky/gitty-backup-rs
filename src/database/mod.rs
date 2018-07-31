@@ -5,7 +5,7 @@ use std::fmt::Display;
 use std::path::Path;
 
 pub trait GittyDatabase {
-    fn store_blob(&mut self, path: &Path) -> Result<GittyBlobRef, Box<DBError>>;
+    fn store_blob(&mut self, path: &Path, is_symlink: bool) -> Result<GittyBlobRef, Box<DBError>>;
     fn store_tree(&mut self, tree: GittyTree) -> Result<GittyTreeRef, Box<DBError>>;
 }
 
