@@ -1,5 +1,8 @@
+use std::ffi::OsString;
 use std::fmt::Display;
+use std::path::Component as PathComponent;
 use std::path::Path;
+use std::path::PathBuf;
 
 extern crate bk_tree;
 extern crate chrono;
@@ -36,7 +39,9 @@ fn main() {
     let path = Path::new(&args[1]);
     let dbpath = Path::new(&args[2]);
     let ignorepath = path.join(".gittyignore");
-    find_changes(path, dbpath, &ignorepath);
+    find_changes(path, dbpath, &ignorepath)
+        .map_err(|p| format!("{}", p))
+        .unwrap();
 }
 
 impl std::convert::From<walkdir::Error> for GittyError {
@@ -50,14 +55,82 @@ impl std::convert::From<std::io::Error> for GittyError {
     }
 }
 
+struct StackPart {
+    name: OsString,
+    metadata: std::fs::Metadata,
+    entries: Vec<GittyTreeEntry>,
+}
+
+fn create_tree_entry(
+    database: &mut impl db::GittyDatabase,
+    StackPart {
+        name,
+        metadata,
+        entries,
+    }: StackPart,
+) -> Result<GittyTreeEntry, GittyError> {
+    Ok(GittyTreeEntry::Tree(GittyTreeMetadata {
+        name,
+        modified: DateTime::from(metadata.modified()?),
+        permissions: Permissions::new(&metadata),
+        hash: database.store_tree(GittyTree { entries })?.hash,
+    }))
+}
+fn ascend_path_stack(
+    database: &mut impl db::GittyDatabase,
+    path_stack: &mut Vec<StackPart>,
+    i: usize,
+) -> Result<(), GittyError> {
+    while path_stack.len() > i {
+        println!(
+            "ascending push {}",
+            path_stack.last().unwrap().name.to_string_lossy()
+        );
+        let new_entry = create_tree_entry(database, path_stack.pop().unwrap())?;
+        let mut last = path_stack.last_mut().unwrap();
+        last.entries.push(new_entry);
+    }
+    Ok(())
+}
 fn dirent_to_gitty_tree_entry(
     database: &mut impl db::GittyDatabase,
-    mut entries: Vec<GittyTreeEntry>,
+    path_stack: &mut Vec<StackPart>,
     dirent: DirEntry,
     metadata: std::fs::Metadata,
-) -> Result<Vec<GittyTreeEntry>, GittyError> {
+) -> Result<(), GittyError> {
+    // TODO: this is kinda ugly, use zip / functional stuff?
+    let current_path: Vec<PathComponent> = dirent.path().components().collect();
+    let first_diff = path_stack
+        .into_iter()
+        .enumerate()
+        .find(|(i, StackPart { name: seg_a, .. })| {
+            let seg_b = current_path.get(*i);
+            Some(&PathComponent::Normal(seg_a)) != seg_b
+        })
+        .map(|(i, _)| i);
+    if let Some(i) = first_diff {
+        ascend_path_stack(database, path_stack, i)?;
+    }
+
+    if current_path.len() != path_stack.len() + 1 {
+        panic!(
+            "cannot descend multiple {:?} -> {:?}",
+            "?", //path_stack.iter().map(|e| e.name),
+            current_path
+        );
+    }
     let is_symlink = metadata.file_type().is_symlink();
-    if metadata.is_file() || is_symlink {
+    if metadata.is_dir() {
+        let name: OsString = dirent.file_name().to_os_string();
+        assert!(current_path.last().unwrap().clone() == PathComponent::Normal(&name));
+        println!("descending into {}", name.to_string_lossy());
+        let entries: Vec<GittyTreeEntry> = Vec::new();
+        path_stack.push(StackPart {
+            name,
+            metadata,
+            entries,
+        });
+    } else if metadata.is_file() || is_symlink {
         let new_entry = GittyTreeEntry::Blob(GittyBlobMetadata {
             name: dirent.file_name().to_os_string(),
             modified: DateTime::from(metadata.modified()?),
@@ -66,31 +139,20 @@ fn dirent_to_gitty_tree_entry(
             is_symlink,
             hash: database.store_blob(dirent.path(), is_symlink)?.hash,
         });
-        entries.push(new_entry);
-        return Ok(entries);
+        path_stack.last_mut().unwrap().entries.push(new_entry);
+    } else {
+        panic!("Unknown file type: {:?}", metadata.file_type());
     }
-
-    if metadata.is_dir() {
-        let new_entry = GittyTreeEntry::Tree(GittyTreeMetadata {
-            name: dirent.file_name().to_os_string(),
-            modified: DateTime::from(metadata.modified()?),
-            permissions: Permissions::new(&metadata),
-            hash: database.store_tree(GittyTree { entries })?.hash,
-        });
-        let entries = vec![new_entry];
-        return Ok(entries);
-    }
-    panic!("Unknown file type: {:?}", metadata.file_type());
+    Ok(())
 }
 
-fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) {
+fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) -> Result<(), GittyError> {
     let mut ignore = ignore::gitignore::GitignoreBuilder::new(dir);
     ignore.add(ignorefile);
     let ignorer = ignore.build().unwrap();
 
     let walker = walkdir::WalkDir::new(dir)
         .follow_links(false)
-        .contents_first(true)
         .sort_by(|a, b| {
             // TODO: prevent calling stat mutliple times (prob important for performance!)
 
@@ -106,8 +168,8 @@ fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) {
         root: dbdir.to_path_buf(),
         object_prefix_length: 3,
     });
-    let mut v: Vec<GittyTreeEntry> = Vec::new();
-    let entries = walker
+    let mut path_stack: Vec<StackPart> = Vec::new();
+    for (entry, metadata) in walker
         .into_iter()
         .filter_entry(|e: &DirEntry| {
             let i = ignorer.matched(e.path(), e.file_type().is_dir());
@@ -132,24 +194,19 @@ fn find_changes(dir: &Path, dbdir: &Path, ignorefile: &Path) {
                     }
                 }
             }
-        })
-        .try_fold(v, |entries, (entry, metadata)| {
-            dirent_to_gitty_tree_entry(&mut db, entries, entry, metadata)
-        });
-
-    match entries {
-        Ok(entries) => {
-            if entries.len() > 1 {
-                eprintln!("more than one root? {:#?}", entries);
-                panic!();
-            }
-            let root = &entries[0];
-            if let GittyTreeEntry::Tree(t) = root {
-                println!("root: {:?}", t.hash);
-            } else {
-                panic!("root is blob?");
-            }
-        }
-        Err(e) => println!("{}", e),
+        }) {
+        dirent_to_gitty_tree_entry(&mut db, &mut path_stack, entry, metadata)?;
     }
+    ascend_path_stack(&mut db, &mut path_stack, 1)?;
+    let root_entry = path_stack.pop().unwrap();
+    if path_stack.len() != 0 {
+        panic!("root invalid");
+    }
+    let root = create_tree_entry(&mut db, root_entry)?;
+    if let GittyTreeEntry::Tree(t) = root {
+        println!("root: {:?}", t.hash);
+    } else {
+        panic!("root is blob?");
+    }
+    Ok(())
 }
