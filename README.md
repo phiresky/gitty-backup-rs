@@ -10,10 +10,12 @@ fname, mtime might not be enough. see [git index](https://mirrors.edge.kernel.or
 
 ## ideas
 
-- store "cost" variable per object that records how much effort it is to restore that object (by recursively resolving deltas)
+-   store "cost" variable per object that records how much effort it is to restore that object (by recursively resolving deltas)
+
+-   global ref count: if only few files changed increase global ref count instead of per object (combine with commit bloom?)
+    https://blogs.msdn.microsoft.com/devops/2018/07/16/super-charging-the-git-commit-graph-iv-bloom-filters/
 
 ## similarity hashing
-
 
 http://manpages.ubuntu.com/manpages/precise/man1/simhash.1.html
 
@@ -23,7 +25,6 @@ http://matpalm.com/resemblance/simhash/
 http://roussev.net/sdhash/sdhash.html
 
 https://ssdeep-project.github.io/ssdeep/
-
 
 http://neoscientists.org/~tmueller/binsort/
 
@@ -76,4 +77,6 @@ There are some things that sadly make git itself unsuitable for this task. Inter
     Git does not track empty directories. I don't think there's an actual reason for this since the internal format can easily handle an empty tree. In fact, the empty tree object [does exist](https://stackoverflow.com/questions/9765453/is-gits-semi-secret-empty-tree-object-reliable-and-why-is-there-not-a-symbolic) but it's only used in special cases.
 
 5. Missing metadata
-    Git does not store any file permissions, ownership, modified time, etc.
+   Git does not store any file permissions, ownership, modified time, extended attributes, etc.
+
+6. git does not store depth to root commit in commit object (easy to calculate, needed for optimizations)
